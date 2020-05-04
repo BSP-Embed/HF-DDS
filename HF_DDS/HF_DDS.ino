@@ -42,9 +42,11 @@ and Demo available on YouTube BSPEmbed  */
 #define LCD_D6          9
 #define LCD_D7          10
 
+#define LSB_USB_SW      A1
+
 #define RELAY_PIN       A0      /* For Frontend Filter  switching*/
 
-#define MAGIC_NO        9      /* For EEPROM Detection */
+#define MAGIC_NO        68      /* For EEPROM Detection */
 #define MAGIC_ADD       0       /* EEPROM ADDRESS */
 #define MODE_ADD        1
 #define SSBMODE_ADDR    2
@@ -79,12 +81,12 @@ typedef struct  {
 /* Default Repeaters Frequencies */
 MemoryChan Channels[] = {
                         7050000,   /* VFO Mode Freq   */
+                        7040000,
                         7050000,   /* Channel1 .. 10 */
                         7080000, 
                         7085000, 
                         7123456, 
                         7150000,
-                        7040000, 
                         7060000,  
                         7070000,
                         7090000,
@@ -104,14 +106,13 @@ volatile uint8_t  Mode;            /* Frequency Or Channel Mode */
 volatile int8_t   ChanNo;
 volatile uint8_t  SSBMode;
 
-boolean FreqChng      = false;
-boolean ChnChng       = false;
-boolean StrChn        = false;
-boolean StrChnChng    = false;
-boolean TuneBfoFlag   = false;
-boolean ChangeSSBMode = false;        /* Switch Mode Flag */
+boolean FreqChng          = false;
+boolean ChnChng           = false;
+boolean StrChn            = false;
+boolean StrChnChng        = false;
+boolean TuneBfoFlag       = false;
 boolean ChangeSSBModeFlag = false;    /* Display Change SSB Flag */
-boolean StoreSSBFlag  = false;
+boolean StoreSSBFlag      = false;
 
 
 
@@ -126,7 +127,7 @@ char *ModeFreChlStr[] = {"VFO","CH1","CH2","CH3","CH4","CH5","CH6","CH7","CH8","
 #define RelayOff()      digitalWrite(RELAY_PIN, LOW)
 
 void setup() {
-  
+  SwitchInit();
   RelayInit();
   EncoderInit();
   Wire.begin();
@@ -149,27 +150,21 @@ void loop() {
   }
   /* Update the display & Clk  for SSB Change*/
   if (ChangeSSBModeFlag) {
-    DispBand();
-    StoreSSBMode();
-    SetClk();
+    ChangeSSBBand();
     ChangeSSBModeFlag = false;
   }
+  
   /* Update for button Press */
   switch (get_button()) {
     case SHORT_PRESS:   if (StrChn) StrChnMEM();
                         else if (Mode >= 1 && Mode <= 10)   /* It Channel Mode */
                             ChngModeToFreq();
-                        else if (ChangeSSBMode) {
-                          DispSSBTuned ();
-                          ChangeSSBMode = false;
-                        }else
+                        else
                           ChngStepSize();
                         break;
     case MEDIUM_PRESS:  if (TuneBfoFlag) {
-                            lcd.setCursor(10,1);
-                            lcd.blink();
-                            ChangeSSBMode = true;
-                            TuneBfoFlag = false;
+                          TuneBfoFlag = false;
+                          DispSSBTuned ();
                         } else 
                           ChngModeToChn();
                         break;
@@ -230,7 +225,6 @@ void DispSSBTuned (void) {
   DispInit();
   TuneBfoFlag = false;
 }
-                          
 /**************************************/
 /* Display Mode/Channel Numer         */
 /* and store in EEPROM                */
@@ -258,7 +252,9 @@ void ChngModeToFreq(void) {
 /*Display Step Size & Store in EEPROM */
 /**************************************/
 void ChngStepSize(void) {
-  if ((StepSize /= 10) < 100)
+  if (StepSize == 50)       StepSize /= 5;
+  else if (StepSize == 100) StepSize /= 2;
+  else if ((StepSize /= 10) < 10)
     StepSize = 1000000;
   DispStepSize(); WriteStepSize();
 }
@@ -273,6 +269,24 @@ void TuneSideBand(void) {
     RxDispFreq =  Channels[SSBMode].RxFreq; 
     DispFreq();
    } 
+}
+/**************************************/
+/* Change Side Band & Store in EEPROM   */
+/**************************************/
+void ChangeSSBBand (void) {
+if (digitalRead(LSB_USB_SW) == LOW) {
+      if (SSBMode == LSB_MODE)
+        SSBMode = USB_MODE;
+      else
+        SSBMode = LSB_MODE;
+      DispBand();
+      StoreSSBMode();
+      SetClk();
+      if (TuneBfoFlag) {
+        TuneBfoFlag   = false;
+        TuneSideBand();
+      }
+   }
 }
 /*****************************************************/
 /* Display Frequency, OutPut Clock  & Store in EEPROM*/
@@ -326,6 +340,13 @@ ISR(PCINT2_vect) {
     set_frequency(-1);
 }
 /**************************************/
+/* Interrupt service routine for      */
+/* LSB/USB Switch                     */
+/**************************************/
+ISR (PCINT1_vect) {
+  ChangeSSBModeFlag = true;
+}
+/**************************************/
 /* Change the frequency               */
 /* dir = 1    Increment               */
 /* dir = -1   Decrement               */
@@ -349,12 +370,6 @@ void set_frequency(short dir){
     if(RxDispFreq < F_MIN)
       RxDispFreq = F_MAX;
      FreqChng = TRUE;
- }else if (ChangeSSBMode){
-    if (SSBMode == LSB_MODE)
-        SSBMode = USB_MODE;
-      else
-        SSBMode = LSB_MODE;
-    ChangeSSBModeFlag = true; 
  } else if (Mode == LSB_MODE || Mode == USB_MODE) {
     switch(dir) {
       case 1: RxDispFreq += StepSize; break;
@@ -465,13 +480,19 @@ void Si5351Init (void) {
   si5351.set_pll(SI5351_PLL_FIXED, SI5351_PLLA);
   si5351.set_freq(CLK1_FREQ * FREQ_MUL, SI5351_CLK1);
 }
-
 void EncoderInit (void) {
   pinMode(ENCODER_BTN, INPUT_PULLUP);
   PCICR |= (1 << PCIE2);                    /* Enable pin change interrupt for the encoder */
   PCMSK2 |= (1 << PCINT18) | (1 << PCINT19);
 }
-
+void SwitchInit (void) {
+    pinMode(LSB_USB_SW, INPUT_PULLUP);
+   *digitalPinToPCMSK(LSB_USB_SW) |= bit (digitalPinToPCMSKbit(LSB_USB_SW));  // enable pin
+    
+   // PCMSK1 |= _BV(LSB_USB_SW);
+    PCIFR  |= bit (digitalPinToPCICRbit(LSB_USB_SW)); // clear any outstanding interrupt
+    PCICR  |= bit (digitalPinToPCICRbit(LSB_USB_SW)); // enable interrupt for the group
+}
 void RelayInit (void) {
   pinMode(RELAY_PIN, OUTPUT);
   digitalWrite(RELAY_PIN, LOW);
@@ -533,7 +554,7 @@ void ReadEEPROM(void){
       StepSize = ReadStepSize();
       RxDispFreq = Channels[Mode].RxFreq;
       if (Mode != FREQ_MODE) ChanNo = Mode;
-      else ChanNo = 0;
+      else ChanNo = 1;
    }  
 }
 /**************************************/
